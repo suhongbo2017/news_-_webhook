@@ -95,6 +95,20 @@ state/notified.json      推送去重状态（首次推送后生成）
 
 按域名自动选格式：`oapi.dingtalk.com` → 钉钉 markdown，`open.feishu.cn` / `larksuite.com` → 飞书 text，`qyapi.weixin.qq.com` → 企业微信 markdown，`discord.com` → Discord，`hooks.slack.com` → Slack，其余通用 JSON `{ title, text, markdown, clusters }`。
 
+### 消息内容
+
+每条事件包含：可点击的标题、≤120 字摘要（与站点一致，取自百度 `desc` / 知乎 `detail`）、平台角标与热度、首条链接。当天第一条消息末尾再附 60 秒日报。
+
+### 长度与降级
+
+各平台单条上限：钉钉 18KB、企业微信 4KB、Discord 1900 字、飞书/Slack 基本无感。超限时按顺序降级，绝不静默丢内容：
+
+1. 去掉摘要（标题、平台、日报全部保留）；
+2. 仍超限就拆成「热点」「日报」两条消息；
+3. 单条还是放不下才按行截断，并在末尾标注「已截断，完整内容见站点」。
+
+所以 8 点那批隔夜热点较多时，企业微信/Discord 可能收到两条消息，日报不会被挤掉。发送多条的场合，只要有一条失败就不标记已读，下一轮整体重发。
+
 ### 推送节奏（北京时间）
 
 | 时间 | 行为 |

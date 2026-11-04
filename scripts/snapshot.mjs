@@ -16,7 +16,7 @@ import {
   detectProvider,
   pushGate,
   sendWebhook,
-  toPayload,
+  toPayloads,
   wasNotified,
 } from './notify.mjs';
 
@@ -142,7 +142,8 @@ if (WEBHOOK_URL) {
         since: state.lastPushAt || null,
         timeZone: gateOpts.timeZone,
       });
-      if (await sendWebhook(WEBHOOK_URL, toPayload(detectProvider(WEBHOOK_URL), message))) {
+      const payloads = toPayloads(detectProvider(WEBHOOK_URL), message);
+      if (await sendWebhook(WEBHOOK_URL, payloads)) {
         mark(picked);
         if (digestPending) state.digestSentFor = today;
         state.lastPushAt = now;

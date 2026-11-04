@@ -36,6 +36,9 @@ function memberLine(cluster, labels) {
 /**
  * 组装消息。clusters 可以为空（只有日报），digest 可以为空（只有热点）。
  * 同一份内容出两个版本：markdown 给钉钉/企业微信，纯文本给其余平台。
+ *
+ * 返回四个档位的变体，供 toPayloads 按平台长度上限挑选：
+ * full（带摘要）→ lean（去摘要）→ 拆成「热点」「日报」两条。
  */
 export function buildMessage({
   clusters = [],
@@ -58,50 +61,66 @@ export function buildMessage({
     ? `覆盖 ${fmt.format(since)} → ${fmt.format(capturedAt)}`
     : `快照 ${fmt.format(capturedAt)}`;
 
-  const parts = [];
-  if (clusters.length) {
-    parts.push(`🔥 全网共识 · ${clusters.length} 个新热点`);
-    for (const [i, c] of clusters.entries()) {
-      const lead = c.members[0];
-      const mdTitle = lead?.url ? `[${c.title}](${lead.url})` : c.title;
-      parts.push(
-        `md:${i + 1}. **${mdTitle}**\n   ${c.platforms} 平台 · 热度 ${c.heat.toFixed(1)} · ${memberLine(c, labels)}`,
-        `raw:${i + 1}. ${c.title}\n   ${c.platforms} 平台 · 热度 ${c.heat.toFixed(1)}\n   ${memberLine(c, labels)}\n   ${lead?.url ?? ''}`,
-      );
+  const compose = ({ summaryCap = 0, withClusters = true, withDigest = true }) => {
+    const parts = [];
+    if (withClusters && clusters.length) {
+      parts.push(`🔥 全网共识 · ${clusters.length} 个新热点`);
+      for (const [i, c] of clusters.entries()) {
+        const lead = c.members[0];
+        const mdTitle = lead?.url ? `[${c.title}](${lead.url})` : c.title;
+        const summary = summaryCap && c.summary
+          ? c.summary.length > summaryCap
+            ? `${c.summary.slice(0, summaryCap)}…`
+            : c.summary
+          : null;
+        const gap = summary ? `\n   ${summary}` : '';
+        parts.push(
+          `md:${i + 1}. **${mdTitle}**${gap}\n   ${c.platforms} 平台 · 热度 ${c.heat.toFixed(1)} · ${memberLine(c, labels)}`,
+          `raw:${i + 1}. ${c.title}${gap}\n   ${c.platforms} 平台 · 热度 ${c.heat.toFixed(1)}\n   ${memberLine(c, labels)}\n   ${lead?.url ?? ''}`,
+        );
+      }
+      if (extraCount > 0) {
+        parts.push(`另有 ${extraCount} 个新热点超出单条上限，下一轮继续推送。`);
+      }
     }
-    if (extraCount > 0) {
-      parts.push(`另有 ${extraCount} 个新热点超出单条上限，下一轮继续推送。`);
+
+    if (withDigest && digest?.news?.length) {
+      parts.push(`📰 今日 60 秒 · ${digest.date}`);
+      digest.news.forEach((line, i) => parts.push(`${i + 1}. ${line}`));
+      if (digest.tip) parts.push(`💬 ${digest.tip}`);
+      if (digest.link) parts.push(`原文 ${digest.link}`);
     }
-  }
 
-  if (digest && digest.news?.length) {
-    parts.push(`📰 今日 60 秒 · ${digest.date}`);
-    digest.news.forEach((line, i) => parts.push(`${i + 1}. ${line}`));
-    if (digest.tip) parts.push(`💬 ${digest.tip}`);
-    if (digest.link) parts.push(`原文 ${digest.link}`);
-  }
-
-  const mdLines = [];
-  const rawLines = [];
-  for (const part of parts) {
-    if (part.startsWith('md:')) mdLines.push(part.slice(3));
-    else if (part.startsWith('raw:')) rawLines.push(part.slice(4));
-    else {
-      mdLines.push(part);
-      rawLines.push(part);
+    const mdLines = [];
+    const rawLines = [];
+    for (const part of parts) {
+      if (part.startsWith('md:')) mdLines.push(part.slice(3));
+      else if (part.startsWith('raw:')) rawLines.push(part.slice(4));
+      else {
+        mdLines.push(part);
+        rawLines.push(part);
+      }
     }
-  }
-
-  const title = clusters.length
-    ? `🔥 全网共识 · ${clusters.length} 个新热点`
-    : `📰 今日 60 秒 · ${digest?.date ?? ''}`;
+    return {
+      empty: parts.length === 0,
+      markdown: `${mdLines.join('\n\n')}\n\n— ${stamp}`,
+      plain: `${rawLines.join('\n\n')}\n\n— ${stamp}`,
+    };
+  };
 
   return {
-    title,
-    markdown: `${mdLines.join('\n\n')}\n\n— ${stamp}`,
-    plain: `${rawLines.join('\n\n')}\n\n— ${stamp}`,
+    title: clusters.length
+      ? `🔥 全网共识 · ${clusters.length} 个新热点`
+      : `📰 今日 60 秒 · ${digest?.date ?? ''}`,
+    variants: {
+      full: compose({ summaryCap: 120 }),
+      lean: compose({ summaryCap: 0 }),
+      clustersOnly: compose({ summaryCap: 120, withDigest: false }),
+      digestOnly: compose({ summaryCap: 0, withClusters: false }),
+    },
     clusters: clusters.map((c) => ({
       title: c.title,
+      summary: c.summary ?? null,
       heat: c.heat,
       platforms: c.platforms,
       url: c.members[0]?.url ?? null,
@@ -110,53 +129,110 @@ export function buildMessage({
   };
 }
 
-export function toPayload(provider, message) {
+/** 各平台单条消息的硬上限；超出就换档或拆条，别让网关直接拒收。 */
+const LIMITS = {
+  dingtalk: { bytes: 18_000 },
+  wecom: { bytes: 4_000 },
+  feishu: { bytes: 30_000 },
+  discord: { chars: 1_900 },
+  slack: { chars: 39_000 },
+};
+
+const encoder = new TextEncoder();
+
+const fits = (text, { chars, bytes }) =>
+  (!chars || text.length <= chars) && (!bytes || encoder.encode(text).length <= bytes);
+
+/** 实在放不下时二分出最长前缀，退到最近的换行处，并标明被截断。 */
+function fit(text, limit) {
+  if (fits(text, limit)) return text;
+
+  const note = '\n\n…（已截断，完整内容见站点）';
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits(text.slice(0, mid) + note, limit)) lo = mid;
+    else hi = mid - 1;
+  }
+  let head = text.slice(0, lo);
+  const nl = head.lastIndexOf('\n');
+  if (nl > lo * 0.6) head = head.slice(0, nl);
+  return head.trimEnd() + note;
+}
+
+function asPayload(provider, body, title) {
   switch (provider) {
     case 'dingtalk':
-      return { msgtype: 'markdown', markdown: { title: message.title, text: message.markdown } };
+      return { msgtype: 'markdown', markdown: { title, text: body.markdown } };
     case 'wecom':
-      return { msgtype: 'markdown', markdown: { content: message.markdown } };
+      return { msgtype: 'markdown', markdown: { content: body.markdown } };
     case 'feishu':
-      return { msg_type: 'text', content: { text: message.plain } };
+      return { msg_type: 'text', content: { text: body.plain } };
     case 'discord':
-      return { content: message.plain.slice(0, 1900) };
+      return { content: body.plain };
     case 'slack':
-      return { text: message.plain };
+      return { text: body.plain };
     default:
-      return {
-        title: message.title,
-        text: message.plain,
-        markdown: message.markdown,
-        clusters: message.clusters,
-      };
+      return { title, text: body.plain, markdown: body.markdown };
   }
 }
 
-/** 返回 true 表示已送达；失败只记日志，绝不影响快照任务本身。 */
-export async function sendWebhook(url, payload) {
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15_000),
-    });
-    const text = await res.text();
-    if (!res.ok) {
-      console.log(`  ! webhook HTTP ${res.status}: ${text.slice(0, 200)}`);
-      return false;
+/**
+ * 按平台上限选档位。放得下就一条；放不下先去掉摘要；还放不下就拆成
+ * 「热点」「日报」两条，保证 8 点那批的日报不会被截掉。
+ */
+export function toPayloads(provider, message) {
+  const limit = LIMITS[provider];
+  const { full, lean, clustersOnly, digestOnly } = message.variants;
+
+  if (!limit) return [asPayload(provider, full, message.title)];
+
+  for (const variant of [full, lean, clustersOnly]) {
+    if (variant.empty) continue;
+    if (fits(variant.markdown, limit) && fits(variant.plain, limit)) {
+      return [asPayload(provider, variant, message.title)];
     }
-    // 钉钉/飞书失败时仍返回 200，错误码在响应体里。
-    if (/"errcode"\s*:\s*[1-9]/.test(text) || /"code"\s*:\s*[1-9]\d*/.test(text)) {
-      console.log(`  ! webhook 被拒绝: ${text.slice(0, 200)}`);
-      return false;
-    }
-    console.log(`  ✓ webhook 已送达 ${PROVIDER_LABEL[detectProvider(url)] ?? ''}`.trim());
-    return true;
-  } catch (err) {
-    console.log(`  ! webhook 发送失败: ${err.message}`);
-    return false;
   }
+
+  const split = [];
+  for (const variant of [clustersOnly, digestOnly]) {
+    if (variant.empty) continue;
+    split.push({
+      markdown: fit(variant.markdown, limit),
+      plain: fit(variant.plain, limit),
+    });
+  }
+  return split.map((body) => asPayload(provider, body, message.title));
+}
+
+/** 返回 true 表示已送达；失败只记日志，绝不影响快照任务本身。 */
+export async function sendWebhook(url, payloads) {
+  for (const payload of [].concat(payloads)) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        console.log(`  ! webhook HTTP ${res.status}: ${text.slice(0, 200)}`);
+        return false;
+      }
+      // 钉钉/飞书失败时仍返回 200，错误码在响应体里。
+      if (/"errcode"\s*:\s*[1-9]/.test(text) || /"code"\s*:\s*[1-9]\d*/.test(text)) {
+        console.log(`  ! webhook 被拒绝: ${text.slice(0, 200)}`);
+        return false;
+      }
+      console.log(`  ✓ webhook 已送达 ${PROVIDER_LABEL[detectProvider(url)] ?? ''}`.trim());
+    } catch (err) {
+      console.log(`  ! webhook 发送失败: ${err.message}`);
+      return false;
+    }
+  }
+  return true;
 }
 
 /** 目标时区的小时（0–23），与 runner 的本地时区无关。 */
