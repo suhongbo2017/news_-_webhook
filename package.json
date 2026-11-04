@@ -1,0 +1,24 @@
+{
+  "name": "hot-radar",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "全网热点雷达：基于 60s-API 的跨平台热点共识站",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "snapshot": "node scripts/snapshot.mjs"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0"
+  }
+}
