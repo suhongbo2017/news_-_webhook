@@ -37,11 +37,17 @@ public/data/latest.json 当前快照 + 近 48 小时故事时间线（由 Action
 .github/workflows/      每 30 分钟快照并部署 Pages
 ```
 
-## 自动化
+## 部署
 
-`.github/workflows/refresh.yml` 每 30 分钟执行一次：抓取 → 提交 `public/data/latest.json` → 构建 → 部署 GitHub Pages。
+1. 推到 GitHub，**默认分支必须是 `main`**（workflow 里写死了）。
+2. Settings → Pages → Source 选 **GitHub Actions**。
+3. Settings → Actions → General → Workflow permissions 选 **Read and write**（机器人要提交快照）。
+4. Actions → refresh → Run workflow 跑一次建立基线（不勾 bootstrap），之后每 30 分钟自动执行。
+5. 站点在 `https://<用户名>.github.io/<仓库名>/`。
 
-启用方式：仓库 Settings → Pages → Source 选 **GitHub Actions**；Settings → Actions → General → Workflow permissions 选 **Read and write**。
+流程是：抓取 → 提交 `public/data/latest.json` → 构建 → 部署。首次如果 Pages 还没启用，构建会失败，启用后重跑一次即可。
+
+验证 webhook：再 Run workflow 一次，勾上 `bootstrap`，会立刻推送当前热点 + 当日 60 秒。
 
 ## Webhook 推送
 

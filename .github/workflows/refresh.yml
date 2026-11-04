@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '*/30 * * * *'
   workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: 立即推送当前热点（跳过首次静默，用于验证 webhook）
+        type: boolean
+        default: false
   push:
     branches: [main]
 
@@ -36,6 +41,7 @@ jobs:
           PUSH_START_HOUR: ${{ vars.PUSH_START_HOUR }}
           PUSH_END_HOUR: ${{ vars.PUSH_END_HOUR }}
           PUSH_MIN_GAP: ${{ vars.PUSH_MIN_GAP }}
+          WEBHOOK_BOOTSTRAP: ${{ inputs.bootstrap && '1' || '' }}
         run: node scripts/snapshot.mjs
       - name: 提交快照
         run: |
