@@ -48,7 +48,7 @@ flowchart LR
 | `capturedAt` | 快照时间戳 |
 | `digest` | 60 秒日报：`date` / `news[]` / `tip` / `link` |
 | `boards[]` | 各榜单：`id` / `label` / `tier`（`hot` 参与聚类、`feed` 只展示）/ `ok` / `stale` / `error` / `items[]` |
-| `clusters[]` | 跨平台事件：`title` / `heat` / `platforms` / `firstSeen` / `series` / `members[]`（含平台、排名、链接） |
+| `clusters[]` | 跨平台事件：`title` / `summary`（簇内最长简介，来自百度 desc 或知乎 detail）/ `heat` / `platforms` / `firstSeen` / `series` / `members[]`（含平台、排名、链接） |
 | `stories[]` | 48 小时故事时间线，用于曲线与在榜时长 |
 
 ## 运行

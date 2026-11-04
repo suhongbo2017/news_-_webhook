@@ -31,6 +31,7 @@ export type ClusterMember = {
 export type Cluster = {
   id: string;
   title: string;
+  summary: string | null;
   heat: number;
   platforms: number;
   firstSeen: number;

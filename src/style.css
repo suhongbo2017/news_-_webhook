@@ -331,6 +331,37 @@ a:hover {
   overflow-wrap: anywhere;
 }
 
+.story-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: color-mix(in srgb, var(--fg) 68%, var(--muted));
+}
+
+.story-summary.expanded {
+  display: block;
+  overflow: visible;
+}
+
+.story-toggle {
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  margin: -4px 0 8px;
+  cursor: pointer;
+}
+
+.story-toggle:hover {
+  color: var(--accent);
+}
+
 .story-chips {
   display: flex;
   flex-wrap: wrap;

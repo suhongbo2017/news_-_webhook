@@ -22,8 +22,8 @@ export const FEEDS = [
 
 export const ALL_BOARDS = [...BOARDS, ...FEEDS];
 
-/** 简介只做悬浮提示，截断可省掉近一半快照体积（快照每 30 分钟提交一次）。 */
-const brief = (text) => (typeof text === 'string' ? text.slice(0, 120) : null);
+/** 简介用于卡片摘要与悬浮提示；截断是为了快照体积（每 30 分钟提交一次）。 */
+const brief = (text) => (typeof text === 'string' && text.trim() ? text.trim().slice(0, 200) : null);
 
 /** 各端点的字段差异集中在这里，新增榜单只需补一个 mapper。 */
 const MAPPERS = {
@@ -346,6 +346,8 @@ export function buildSnapshot({ digestRaw, boards, previous, now = Date.now() })
     clusters: clusters.map((c) => ({
       id: c.id,
       title: c.title,
+      // 摘要取簇内信息量最大的一段（百度 desc / 知乎 detail），全都没有时为空。
+      summary: c.members.map((m) => m.desc).filter(Boolean).sort((a, b) => b.length - a.length)[0] || null,
       heat: c.heat,
       platforms: c.platforms,
       firstSeen: c.stats.firstSeen,
