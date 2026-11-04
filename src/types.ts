@@ -5,7 +5,6 @@ export type BoardItem = {
   hot: number | null;
   url: string | null;
   desc?: string | null;
-  cover?: string | null;
   score?: number;
 };
 
