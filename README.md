@@ -2,18 +2,54 @@
 
 把微博、百度、头条、抖音、知乎的热榜做跨平台聚合：**只有一个事件在多个平台同时上榜，才算全网热点**。每天 60 秒新闻作为定场内容放在侧栏。
 
-数据源为 [60s-API](https://github.com/vikiboss/60s) 的公共实例 `https://news.ucac.edu.kg`（该实例允许跨域，浏览器可直连）。
+数据源为 [60s-API](https://github.com/vikiboss/60s) 的公共实例 `https://news.ucac.edu.kg`（返回 `Access-Control-Allow-Origin: *`，浏览器可直连）。
 
-## 为什么不是又一个热榜页
+## 为什么不只是又一个热榜页
 
-单平台热榜到处都是，缺的是「共识」这一层：同一件事在几个平台同时出现、各自排第几、在榜多久。本项目就做这一层。
+单平台热榜到处都是，缺的是「共识」这一层：同一件事在几个平台同时出现、各自排第几、已经在榜多久。本项目只做这一层，其余一律跳转原页面。
 
-- 聚类：标题归一化（去标点/全角、中文数字转阿拉伯数字）→ 字符 trigram 命中率，要求 **命中率 ≥ 0.5 且长度比 ≥ 0.55**。长度比闸门是必需的，否则「微博视界大会座位」会被并进「…微博视界大会同台领奖」。
-- 只在**不同平台**之间连边。同平台两条热搜彼此无关，连边只会制造假合并。
-- 热度：榜内 `log(1+hot)` min-max 归一化（无热度值的榜单退化为排名分）× 平台权重，再乘 `1 + 0.12 × (平台数 - 1)` 的共识加成，最后按当前最大值缩放成 0–100。
-- 时间线：每次快照把当前簇与上一轮的故事做相似度匹配，保留 `firstSeen` / 峰值 / 曲线；断档超过 90 分钟视为重新上榜，重置起点。
+## 工作方式
 
-实测：微博/百度/头条/抖音/知乎各取 50 条，能稳定聚出 9–12 个跨平台事件，误合并基本为零。
+```mermaid
+flowchart LR
+  api[60s-API<br/>7 个端点] -->|抓取| snap[scripts/snapshot.mjs]
+  snap --> core[聚类 / 热度 / 时间线]
+  core --> json[public/data/latest.json]
+  json --> site[GitHub Pages 静态站]
+  core -->|新事件| hook[Webhook 群消息]
+  site -.->|实时刷新按钮| api
+```
+
+`src/lib/radar.js` 是纯函数核心，Node 定时任务和浏览器共用同一份聚类逻辑，所以「实时刷新」和「定时快照」算出来的结果一致。
+
+### 聚类
+
+1. **归一化**：去标点与空白、全角转半角、`两名/2名` 这类中文数字按量词转阿拉伯数字。
+2. **两条相似通路**（都必须先过长度比闸门 `min/max ≥ 0.55`）：
+   - 字 3-gram 命中率 `≥ 0.5` —— 覆盖同题不同措辞；
+   - 字袋重合 `≥ 0.8` 且最长公共子序列占比 `≥ 0.7` —— 覆盖同词不同语序（如「无锡队夺得苏超冠军」/「无锡队苏超夺冠」）。
+   长度比闸门是必需的，否则「微博视界大会座位」会被并进「…微博视界大会同台领奖」。
+3. **只在不同平台之间连边**：同平台两条热搜彼此无关，连边只会制造假合并。
+
+### 热度
+
+榜内 `log(1+hot)` 做 min-max 归一化（无热度值的榜单退化为排名分）× 平台权重（微博/百度 1.0、头条 0.95、抖音 0.9、知乎 0.85），簇内取最大值，再乘 `1 + 0.12 × (平台数 - 1)` 的共识加成，最后按当前最大值缩放成 0–100。
+
+### 时间线
+
+每次快照把当前簇与上一轮的故事做相似度匹配，保留 `firstSeen` / 峰值 / 曲线；断档超过 90 分钟视为重新上榜，重置起点。故事与曲线保留 48 小时，快照里最多 48 个点。
+
+## 数据结构
+
+`public/data/latest.json`：
+
+| 字段 | 说明 |
+|---|---|
+| `capturedAt` | 快照时间戳 |
+| `digest` | 60 秒日报：`date` / `news[]` / `tip` / `link` |
+| `boards[]` | 各榜单：`id` / `label` / `tier`（`hot` 参与聚类、`feed` 只展示）/ `ok` / `stale` / `error` / `items[]` |
+| `clusters[]` | 跨平台事件：`title` / `heat` / `platforms` / `firstSeen` / `series` / `members[]`（含平台、排名、链接） |
+| `stories[]` | 48 小时故事时间线，用于曲线与在榜时长 |
 
 ## 运行
 
@@ -24,17 +60,19 @@ npm run dev        # http://localhost:5173
 npm run build      # 产物在 dist/
 ```
 
-页面上的「实时刷新」按钮在浏览器里直接请求上游并用同一套聚类逻辑重算，不需要后端；刷新时间线与历史则要靠定时快照。
+页面上的「实时刷新」在浏览器里直接请求上游并用同一套逻辑重算，不需要后端；时间线与历史则依赖定时快照。
 
 ## 目录
 
 ```
-src/lib/radar.js        纯函数核心：归一化、相似度、聚类、热度、时间线（Node 与浏览器共用）
-scripts/snapshot.mjs    定时任务：抓取 → 聚类 → 写 public/data/latest.json
-src/lib/live.ts         浏览器端实时抓取
-src/components/         共识榜 / 平台热榜 / 60 秒日报
-public/data/latest.json 当前快照 + 近 48 小时故事时间线（由 Actions 提交）
-.github/workflows/      每 30 分钟快照并部署 Pages
+src/lib/radar.js         纯函数核心：归一化、相似度、聚类、热度、时间线（Node 与浏览器共用）
+scripts/snapshot.mjs     定时任务：抓取 → 聚类 → 写快照 → 推送
+scripts/notify.mjs       Webhook：格式适配、推送闸门、去重
+src/lib/live.ts          浏览器端实时抓取
+src/components/          共识榜 / 平台热榜 / 60 秒日报
+public/data/latest.json  当前快照 + 48 小时故事时间线（由 Actions 提交）
+state/notified.json      推送去重状态（首次推送后生成）
+.github/workflows/       每 30 分钟快照并部署 Pages
 ```
 
 ## 部署
@@ -45,9 +83,7 @@ public/data/latest.json 当前快照 + 近 48 小时故事时间线（由 Action
 4. Actions → refresh → Run workflow 跑一次建立基线（不勾 bootstrap），之后每 30 分钟自动执行。
 5. 站点在 `https://<用户名>.github.io/<仓库名>/`。
 
-流程是：抓取 → 提交 `public/data/latest.json` → 构建 → 部署。首次如果 Pages 还没启用，构建会失败，启用后重跑一次即可。
-
-验证 webhook：再 Run workflow 一次，勾上 `bootstrap`，会立刻推送当前热点 + 当日 60 秒。
+流程是：抓取 → 提交 `public/data/latest.json` → 构建 → 部署。首次如果 Pages 还没启用，部署步骤会失败，启用后重跑一次即可。
 
 ## Webhook 推送
 
@@ -55,9 +91,9 @@ public/data/latest.json 当前快照 + 近 48 小时故事时间线（由 Action
 
 1. Settings → Secrets and variables → Actions → New repository secret：`WEBHOOK_URL`。
 2. （可选）同页 Variables 配置下表里的调参项。
-3. Actions → refresh → Run workflow 验证。
+3. Actions → refresh → Run workflow：不勾 bootstrap 建立基线，勾上则立刻推一次用于验证。
 
-按域名自动选格式：`oapi.dingtalk.com` → 钉钉 markdown，`open.feishu.cn` / `larksuite.com` → 飞书 text，`qyapi.weixin.qq.com` → 企业微信 markdown，`discord.com` → Discord，`hooks.slack.com` → Slack，其余通用 JSON `{ text, markdown, clusters }`。
+按域名自动选格式：`oapi.dingtalk.com` → 钉钉 markdown，`open.feishu.cn` / `larksuite.com` → 飞书 text，`qyapi.weixin.qq.com` → 企业微信 markdown，`discord.com` → Discord，`hooks.slack.com` → Slack，其余通用 JSON `{ title, text, markdown, clusters }`。
 
 ### 推送节奏（北京时间）
 
@@ -75,8 +111,8 @@ public/data/latest.json 当前快照 + 近 48 小时故事时间线（由 Action
 
 - 同一故事 id 不重复推；事件掉榜后重新上榜会拿到新 id，再用 **24 小时内标题相似度**兜住，不会二次推送。
 - 去重状态在 `state/notified.json`，随快照一起提交，跨机器重启保留（id 记 7 天、标题记 48 小时）。
-- 单条最多推 `WEBHOOK_MAX_ITEMS`（默认 8）条，超出的**留在队列**下一小时继续发，不会丢。
-- 首次部署静默记账，不刷屏；想立刻推一次，手动触发时带 `WEBHOOK_BOOTSTRAP=1`。
+- 单条最多推 `WEBHOOK_MAX_ITEMS`（默认 10）条，超出的**留在队列**下一小时继续发，不会丢。
+- 首次部署静默记账，不刷屏。
 - 发送失败只打日志、不记账，下一轮重试，不影响快照与部署。
 
 | 变量 | 默认 | 说明 |
@@ -88,12 +124,27 @@ public/data/latest.json 当前快照 + 近 48 小时故事时间线（由 Action
 | `PUSH_START_HOUR` | 8 | 推送窗口起点 |
 | `PUSH_END_HOUR` | 22 | 推送窗口终点 |
 | `PUSH_MIN_GAP` | 55 | 两次推送的最小间隔（分钟） |
+| `WEBHOOK_BOOTSTRAP` | 关闭 | `1` 时跳过首次静默，立即推送 |
+| `API_BASE` | 公共实例 | 抓取用的上游地址 |
+| `VITE_API_BASE` | 公共实例 | 前端实时刷新用的上游地址 |
 
-## 健壮性## 健壮性
+## 运维
+
+- **仓库会持续变大**：每次快照约 92KB（压缩后 10–15KB），每天 48 次，一年约 200MB。半年左右可清一次历史，只保留最新快照：
+
+  ```bash
+  git checkout --orphan clean && git add -A && git commit -m "snapshot reset"
+  git branch -D main && git branch -m main && git push -f origin main
+  ```
+
+- **Actions 定时任务不准时**：延迟 5–15 分钟正常，偶尔整轮丢跑。推送逻辑已按「窗口 + 最小间隔」设计以容忍这两种情况；快照丢跑只影响那半小时的曲线点。
+- **仓库 60 天无活动会被停用定时任务**：本项目每 30 分钟提交快照，属于活动，正常不会触发；若关掉提交步骤需自行留意。
+
+## 健壮性
 
 - 任一榜单失败不会阻塞整体：该榜单沿用上一份快照并标记 `stale`，页面顶部会点出异常源。
 - 60 秒日报失败时沿用上次内容。
-- 上游公告过公共实例可能停服/限流。自建时把 `API_BASE`（定时任务）和 `VITE_API_BASE`（前端）指向自己的实例即可，无需改代码。
+- 上游公告过公共实例可能停服/限流。自建时把 `API_BASE` 与 `VITE_API_BASE` 指向自己的实例即可，无需改代码。
 
 ## 限制
 
