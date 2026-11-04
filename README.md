@@ -93,11 +93,11 @@ state/notified.json      推送去重状态（首次推送后生成）
 2. （可选）同页 Variables 配置下表里的调参项。
 3. Actions → refresh → Run workflow：不勾 bootstrap 建立基线，勾上则立刻推一次用于验证。
 
-按域名自动选格式：`oapi.dingtalk.com` → 钉钉 markdown，`open.feishu.cn` / `larksuite.com` → 飞书 text，`qyapi.weixin.qq.com` → 企业微信 markdown，`discord.com` → Discord，`hooks.slack.com` → Slack，其余通用 JSON `{ title, text, markdown, clusters }`。
+按域名自动选格式：`oapi.dingtalk.com` → 钉钉 markdown `[标题](链接)`，`open.feishu.cn` / `larksuite.com` → 飞书富文本卡片（`post`，标题是 `a` 标签），`qyapi.weixin.qq.com` → 企业微信 markdown，`discord.com` → Discord 掩码链接，`hooks.slack.com` → Slack `<链接|标题>`，其余通用 JSON `{ title, text, markdown, clusters }`。
 
 ### 消息内容
 
-每条事件包含：可点击的标题、≤120 字摘要（与站点一致，取自百度 `desc` / 知乎 `detail`）、平台角标与热度、首条链接。当天第一条消息末尾再附 60 秒日报。
+每条事件包含：标题（**本身即超链接**，不出现裸 URL）、≤120 字摘要（与站点一致，取自百度 `desc` / 知乎 `detail`）、平台角标与热度。当天第一条消息末尾再附 60 秒日报，`阅读原文` 同样是掩码链接。
 
 ### 长度与降级
 

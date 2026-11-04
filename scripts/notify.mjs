@@ -3,6 +3,8 @@
  *
  * 只在服务端（GitHub Actions / 本地脚本）运行：webhook URL 是凭据，
  * 一旦进浏览器就会被任何人读走，且多数服务端 webhook 不允许跨域。
+ *
+ * 消息先抽象成「段落」，再按目标平台渲染：链接一律用标题当锚文本，不暴露 URL。
  */
 import { CLUSTER_THRESHOLD, similarity } from '../src/lib/radar.js';
 
@@ -33,12 +35,15 @@ function memberLine(cluster, labels) {
     .join(' · ');
 }
 
+/** 摘要截断：120 字够判断要不要点，又不至于让单条消息爆掉。 */
+function trimSummary(text, cap) {
+  if (!cap || !text) return null;
+  return text.length > cap ? `${text.slice(0, cap)}…` : text;
+}
+
 /**
- * 组装消息。clusters 可以为空（只有日报），digest 可以为空（只有热点）。
- * 同一份内容出两个版本：markdown 给钉钉/企业微信，纯文本给其余平台。
- *
- * 返回四个档位的变体，供 toPayloads 按平台长度上限挑选：
- * full（带摘要）→ lean（去摘要）→ 拆成「热点」「日报」两条。
+ * 把内容拆成段落，供任何平台渲染。clusters 可以为空（只有日报），
+ * digest 可以为空（只有热点）。
  */
 export function buildMessage({
   clusters = [],
@@ -57,66 +62,48 @@ export function buildMessage({
     minute: '2-digit',
     hourCycle: 'h23',
   });
-  const stamp = since
-    ? `覆盖 ${fmt.format(since)} → ${fmt.format(capturedAt)}`
-    : `快照 ${fmt.format(capturedAt)}`;
+  const footer = `— ${since ? `覆盖 ${fmt.format(since)} → ${fmt.format(capturedAt)}` : `快照 ${fmt.format(capturedAt)}`}`;
 
-  const compose = ({ summaryCap = 0, withClusters = true, withDigest = true }) => {
-    const parts = [];
+  const sections = ({ summaryCap = 0, withClusters = true, withDigest = true }) => {
+    const out = [];
     if (withClusters && clusters.length) {
-      parts.push(`🔥 全网共识 · ${clusters.length} 个新热点`);
+      out.push({ kind: 'text', text: `🔥 全网共识 · ${clusters.length} 个新热点` });
       for (const [i, c] of clusters.entries()) {
-        const lead = c.members[0];
-        const mdTitle = lead?.url ? `[${c.title}](${lead.url})` : c.title;
-        const summary = summaryCap && c.summary
-          ? c.summary.length > summaryCap
-            ? `${c.summary.slice(0, summaryCap)}…`
-            : c.summary
-          : null;
-        const gap = summary ? `\n   ${summary}` : '';
-        parts.push(
-          `md:${i + 1}. **${mdTitle}**${gap}\n   ${c.platforms} 平台 · 热度 ${c.heat.toFixed(1)} · ${memberLine(c, labels)}`,
-          `raw:${i + 1}. ${c.title}${gap}\n   ${c.platforms} 平台 · 热度 ${c.heat.toFixed(1)}\n   ${memberLine(c, labels)}\n   ${lead?.url ?? ''}`,
-        );
+        out.push({
+          kind: 'cluster',
+          index: i + 1,
+          title: c.title,
+          url: c.members[0]?.url ?? null,
+          summary: trimSummary(c.summary, summaryCap),
+          heat: c.heat,
+          platforms: c.platforms,
+          members: memberLine(c, labels),
+        });
       }
       if (extraCount > 0) {
-        parts.push(`另有 ${extraCount} 个新热点超出单条上限，下一轮继续推送。`);
+        out.push({ kind: 'text', text: `另有 ${extraCount} 个新热点超出单条上限，下一轮继续推送。` });
       }
     }
 
     if (withDigest && digest?.news?.length) {
-      parts.push(`📰 今日 60 秒 · ${digest.date}`);
-      digest.news.forEach((line, i) => parts.push(`${i + 1}. ${line}`));
-      if (digest.tip) parts.push(`💬 ${digest.tip}`);
-      if (digest.link) parts.push(`原文 ${digest.link}`);
+      out.push({ kind: 'text', text: `📰 今日 60 秒 · ${digest.date}` });
+      digest.news.forEach((line, i) => out.push({ kind: 'text', text: `${i + 1}. ${line}` }));
+      if (digest.tip) out.push({ kind: 'text', text: `💬 ${digest.tip}` });
+      if (digest.link) out.push({ kind: 'link', text: '阅读原文', url: digest.link });
     }
-
-    const mdLines = [];
-    const rawLines = [];
-    for (const part of parts) {
-      if (part.startsWith('md:')) mdLines.push(part.slice(3));
-      else if (part.startsWith('raw:')) rawLines.push(part.slice(4));
-      else {
-        mdLines.push(part);
-        rawLines.push(part);
-      }
-    }
-    return {
-      empty: parts.length === 0,
-      markdown: `${mdLines.join('\n\n')}\n\n— ${stamp}`,
-      plain: `${rawLines.join('\n\n')}\n\n— ${stamp}`,
-    };
+    return out;
   };
 
   return {
     title: clusters.length
       ? `🔥 全网共识 · ${clusters.length} 个新热点`
       : `📰 今日 60 秒 · ${digest?.date ?? ''}`,
-    variants: {
-      full: compose({ summaryCap: 120 }),
-      lean: compose({ summaryCap: 0 }),
-      clustersOnly: compose({ summaryCap: 120, withDigest: false }),
-      digestOnly: compose({ summaryCap: 0, withClusters: false }),
+    footer,
+    tiers: {
+      full: sections({ summaryCap: 120 }),
+      lean: sections({ summaryCap: 0 }),
+      clustersOnly: sections({ summaryCap: 120, withDigest: false }),
+      digestOnly: sections({ summaryCap: 0, withClusters: false }),
     },
     clusters: clusters.map((c) => ({
       title: c.title,
@@ -161,20 +148,88 @@ function fit(text, limit) {
   return head.trimEnd() + note;
 }
 
-function asPayload(provider, body, title) {
+/** Slack 用 <url|title>，其余支持 markdown 的平台用 [title](url)。 */
+function linkSyntax(provider) {
+  return provider === 'slack'
+    ? (text, url) => `<${url}|${text}>`
+    : (text, url) => `[${text}](${url})`;
+}
+
+/** 纯文本渲染，同时用于长度测量。 */
+function renderText(provider, message, sections) {
+  const link = linkSyntax(provider);
+  const blocks = sections.map((s) => {
+    if (s.kind === 'cluster') {
+      const head = `${s.index}. ${s.url ? link(s.title, s.url) : s.title}`;
+      const lines = [head];
+      if (s.summary) lines.push(`   ${s.summary}`);
+      lines.push(`   ${s.platforms} 平台 · 热度 ${s.heat.toFixed(1)} · ${s.members}`);
+      return lines.join('\n');
+    }
+    if (s.kind === 'link') return s.url ? link(s.text, s.url) : s.text;
+    return s.text;
+  });
+  return `${blocks.join('\n\n')}\n\n${message.footer}`;
+}
+
+/** 飞书富文本卡片：标题本身是超链接，不出现裸 URL。 */
+function feishuPost(message, sections) {
+  const content = [];
+  for (const s of sections) {
+    if (s.kind === 'cluster') {
+      content.push(
+        s.url
+          ? [
+              { tag: 'text', text: `${s.index}. ` },
+              { tag: 'a', text: s.title, href: s.url },
+            ]
+          : [{ tag: 'text', text: `${s.index}. ${s.title}` }],
+      );
+      if (s.summary) content.push([{ tag: 'text', text: `   ${s.summary}` }]);
+      content.push([
+        { tag: 'text', text: `   ${s.platforms} 平台 · 热度 ${s.heat.toFixed(1)} · ${s.members}` },
+      ]);
+    } else if (s.kind === 'link' && s.url) {
+      content.push([{ tag: 'a', text: s.text, href: s.url }]);
+    } else {
+      content.push([{ tag: 'text', text: s.text }]);
+    }
+  }
+  return {
+    msg_type: 'post',
+    content: {
+      post: {
+        zh_cn: { title: message.title, content },
+      },
+    },
+  };
+}
+
+function asPayload(provider, message, sections) {
   switch (provider) {
     case 'dingtalk':
-      return { msgtype: 'markdown', markdown: { title, text: body.markdown } };
+      return {
+        msgtype: 'markdown',
+        markdown: { title: message.title, text: renderText(provider, message, sections) },
+      };
     case 'wecom':
-      return { msgtype: 'markdown', markdown: { content: body.markdown } };
+      return {
+        msgtype: 'markdown',
+        markdown: { content: renderText(provider, message, sections) },
+      };
     case 'feishu':
-      return { msg_type: 'text', content: { text: body.plain } };
+      return feishuPost(message, sections);
     case 'discord':
-      return { content: body.plain };
+      return { content: renderText(provider, message, sections) };
     case 'slack':
-      return { text: body.plain };
+      return { text: renderText(provider, message, sections) };
     default:
-      return { title, text: body.plain, markdown: body.markdown };
+      return {
+        title: message.title,
+        text: renderText(provider, message, sections),
+        markdown: renderText('dingtalk', message, sections),
+        clusters: message.clusters,
+      };
   }
 }
 
@@ -184,29 +239,38 @@ function asPayload(provider, body, title) {
  */
 export function toPayloads(provider, message) {
   const limit = LIMITS[provider];
-  const { full, lean, clustersOnly, digestOnly } = message.variants;
+  const tiers = [message.tiers.full, message.tiers.lean, message.tiers.clustersOnly].filter(
+    (t) => t.length,
+  );
 
-  if (!limit) return [asPayload(provider, full, message.title)];
+  if (!limit) return [asPayload(provider, message, tiers[0])];
 
-  for (const variant of [full, lean, clustersOnly]) {
-    if (variant.empty) continue;
-    if (fits(variant.markdown, limit) && fits(variant.plain, limit)) {
-      return [asPayload(provider, variant, message.title)];
+  for (const tier of tiers) {
+    if (fits(renderText(provider, message, tier), limit)) {
+      return [asPayload(provider, message, tier)];
     }
   }
 
-  const split = [];
-  for (const variant of [clustersOnly, digestOnly]) {
-    if (variant.empty) continue;
-    split.push({
-      markdown: fit(variant.markdown, limit),
-      plain: fit(variant.plain, limit),
-    });
+  const parts = [message.tiers.clustersOnly, message.tiers.digestOnly].filter((t) => t.length);
+  if (parts.length <= 1) {
+    const only = parts[0] ?? message.tiers.lean;
+    return [asPayload(provider, message, only)];
   }
-  return split.map((body) => asPayload(provider, body, message.title));
+
+  // 拆条时把每条压到上限内：飞书用结构化卡片，不做文本截断。
+  return parts.map((tier) => {
+    if (provider === 'feishu') return asPayload(provider, message, tier);
+    const text = fit(renderText(provider, message, tier), limit);
+    if (provider === 'dingtalk') {
+      return { msgtype: 'markdown', markdown: { title: message.title, text } };
+    }
+    if (provider === 'wecom') return { msgtype: 'markdown', markdown: { content: text } };
+    if (provider === 'discord') return { content: text };
+    return { text };
+  });
 }
 
-/** 返回 true 表示已送达；失败只记日志，绝不影响快照任务本身。 */
+/** 返回 true 表示全部送达；失败只记日志，绝不影响快照任务本身。 */
 export async function sendWebhook(url, payloads) {
   for (const payload of [].concat(payloads)) {
     try {
