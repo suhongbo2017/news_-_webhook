@@ -116,6 +116,56 @@ export function buildMessage({
   };
 }
 
+/**
+ * 故障/恢复告警，和内容推送走同一条 webhook，但不受推送窗口与去重状态影响。
+ * 返回结构与 buildMessage 一致，可直接交给 toPayloads。
+ */
+export function buildAlertMessage({
+  kind,
+  bases = [],
+  capturedAt,
+  timeZone = 'Asia/Shanghai',
+  siteUrl = null,
+  lastGood = null,
+}) {
+  const fmt = new Intl.DateTimeFormat('zh-CN', {
+    timeZone,
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  });
+  const down = kind === 'down';
+  const sections = down
+    ? [
+        { kind: 'text', text: '⚠️ 数据源不可用' },
+        { kind: 'text', text: `所有实例都失败了：${bases.join('、') || '未配置'}` },
+        {
+          kind: 'text',
+          text: '站点继续显示最后一次成功的快照；热点推送暂停，恢复后自动补发。每天最多告警一次。',
+        },
+        ...(siteUrl ? [{ kind: 'link', text: '打开站点', url: siteUrl }] : []),
+      ]
+    : [
+        { kind: 'text', text: '✅ 数据源已恢复' },
+        {
+          kind: 'text',
+          text: lastGood
+            ? `中断期间站点展示的是 ${fmt.format(lastGood)} 的快照，现已重新抓取。`
+            : '已重新抓取数据。',
+        },
+        ...(siteUrl ? [{ kind: 'link', text: '打开站点', url: siteUrl }] : []),
+      ];
+
+  return {
+    title: down ? '⚠️ 数据源不可用' : '✅ 数据源已恢复',
+    footer: `— ${fmt.format(capturedAt)}`,
+    tiers: { full: sections, lean: sections, clustersOnly: sections, digestOnly: sections },
+    clusters: [],
+  };
+}
+
 /** 各平台单条消息的硬上限；超出就换档或拆条，别让网关直接拒收。 */
 const LIMITS = {
   dingtalk: { bytes: 18_000 },

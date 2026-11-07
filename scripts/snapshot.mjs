@@ -11,6 +11,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ALL_BOARDS, buildSnapshot } from '../src/lib/radar.js';
 import {
+  buildAlertMessage,
   buildMessage,
   localDate,
   detectProvider,
@@ -130,7 +131,7 @@ if (WEBHOOK_URL) {
   } catch {
     stored = null;
   }
-  const state = { ids: {}, titles: [], lastPushAt: 0, ...(stored ?? {}) };
+  const state = { ids: {}, titles: [], lastPushAt: 0, alertSentFor: null, alertDown: false, ...(stored ?? {}) };
   for (const [id, ts] of Object.entries(state.ids)) if (now - ts > 7 * 864e5) delete state.ids[id];
   state.titles = state.titles.filter((t) => now - t.ts < 48 * 3600e3);
 
@@ -151,6 +152,29 @@ if (WEBHOOK_URL) {
       state.titles.push({ t: c.title, ts: now });
     }
   };
+
+  // ---- 故障/恢复告警：不受推送窗口限制，每天最多一次 ----
+  const allDown = snapshot.boards.every((b) => !b.ok);
+  const siteUrl = process.env.SITE_URL || null;
+  const alert = async (kind, lastGood = null) =>
+    sendWebhook(
+      WEBHOOK_URL,
+      toPayloads(
+        detectProvider(WEBHOOK_URL),
+        buildAlertMessage({ kind, bases: BASES, capturedAt: now, timeZone: gateOpts.timeZone, siteUrl, lastGood }),
+      ),
+    );
+
+  if (allDown) {
+    if (state.alertSentFor !== today && (await alert('down', previous?.capturedAt ?? null))) {
+      state.alertSentFor = today;
+      state.alertDown = true;
+      console.log('  ⚠ webhook: 已发送数据源故障告警');
+    }
+  } else if (state.alertDown && (await alert('up'))) {
+    state.alertDown = false;
+    console.log('  ✓ webhook: 已发送恢复通知');
+  }
 
   if (!stored && !bootstrap) {
     // 首次部署静默记账，否则会把当时整屏热点一次性刷进群。
