@@ -51,6 +51,7 @@ export type Digest = {
 
 export type Snapshot = {
   capturedAt: number;
+  apiBase?: string | null;
   digest: Digest | null;
   digestError?: string;
   boards: Board[];

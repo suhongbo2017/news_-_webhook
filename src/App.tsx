@@ -121,7 +121,7 @@ export default function App() {
 
       <footer className="foot">
         数据来自 <a href="https://github.com/vikiboss/60s" target="_blank" rel="noreferrer noopener">60s-API</a>
-        公共实例 · 热度为各平台榜内归一化后的合成值，仅代表相对位置
+        {snapshot?.apiBase && `（${new URL(snapshot.apiBase).host}）`} · 热度为各平台榜内归一化后的合成值，仅代表相对位置
       </footer>
     </div>
   );

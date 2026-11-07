@@ -20,15 +20,21 @@ import {
   wasNotified,
 } from './notify.mjs';
 
-const BASE = process.env.API_BASE || 'https://news.ucac.edu.kg';
+// 数据源按顺序故障转移：第一个可用实例会被记住，同一次运行内不再来回切。
+const BASES = (process.env.API_BASE || 'https://news.ucac.edu.kg,https://60s.viki.moe')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+let activeBase = null;
+const failedBases = new Set();
 const OUT = resolve(dirname(fileURLToPath(import.meta.url)), '../public/data/latest.json');
 /** 空字符串（Actions 里未配置的 vars）必须回落到默认值，不能变成 0。 */
 const envNum = (value, fallback) => (value === undefined || value === '' ? fallback : Number(value));
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36 hot-radar/1.0';
 
-async function getJSON(path) {
-  const res = await fetch(`${BASE}${path}`, {
+async function request(base, path) {
+  const res = await fetch(`${base}${path}`, {
     headers: { 'user-agent': UA, accept: 'application/json' },
     signal: AbortSignal.timeout(20_000),
   });
@@ -36,6 +42,31 @@ async function getJSON(path) {
   const body = await res.json();
   if (body.code && body.code !== 200) throw new Error(body.message || `code ${body.code}`);
   return body.data;
+}
+
+async function getJSON(path) {
+  const order = (activeBase ? [activeBase, ...BASES] : BASES).filter(
+    (base, i, arr) => arr.indexOf(base) === i,
+  );
+  let lastError = null;
+  for (const base of order) {
+    try {
+      const data = await request(base, path);
+      if (base !== activeBase) {
+        if (activeBase) console.log(`  · 数据源切换：${activeBase} → ${base}`);
+        activeBase = base;
+      }
+      return data;
+    } catch (err) {
+      if (!failedBases.has(base)) {
+        console.log(`  ! 数据源 ${base} 不可用：${err.message}`);
+        failedBases.add(base);
+      }
+      lastError = err;
+      if (activeBase === base) activeBase = null;
+    }
+  }
+  throw lastError ?? new Error('无可用数据源');
 }
 
 async function readPrevious() {
@@ -70,6 +101,7 @@ try {
 }
 
 const snapshot = buildSnapshot({ digestRaw, boards, previous, now: Date.now() });
+snapshot.apiBase = activeBase;
 if (digestError) snapshot.digestError = digestError;
 
 await mkdir(dirname(OUT), { recursive: true });
