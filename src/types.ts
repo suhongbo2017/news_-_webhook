@@ -34,6 +34,7 @@ export type Cluster = {
   summary: string | null;
   heat: number;
   platforms: number;
+  stale?: boolean;
   firstSeen: number;
   peak: number;
   series: [number, number][];

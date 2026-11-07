@@ -227,13 +227,16 @@ export function mergeHistory(clusters, previousStories, now) {
       used.add(best.id);
       // 断档超过 90 分钟视为重新上榜，重置起始时间。
       if (now - best.lastSeen > 90 * 60e3) best.firstSeen = now;
-      best.lastSeen = now;
       best.title = cluster.title;
-      best.peak = Math.max(best.peak, cluster.heat);
-      best.platforms = Math.max(best.platforms, cluster.platforms);
-      best.series.push([now, cluster.heat, cluster.platforms]);
-      if (best.series.length > 96) best.series = best.series.slice(-96);
       cluster.id = best.id;
+      // 数据冻结时不延伸时间线：否则站点会在上游挂掉期间谎报「在榜 N 小时」。
+      if (!cluster.stale) {
+        best.lastSeen = now;
+        best.peak = Math.max(best.peak, cluster.heat);
+        best.platforms = Math.max(best.platforms, cluster.platforms);
+        best.series.push([now, cluster.heat, cluster.platforms]);
+        if (best.series.length > 96) best.series = best.series.slice(-96);
+      }
     } else {
       const story = {
         id: `${now.toString(36)}-${hash36(normalizeTitle(cluster.title))}`,
@@ -314,6 +317,10 @@ export function buildSnapshot({ digestRaw, boards, previous, now = Date.now() })
   }
 
   const clusters = clusterStories(allItems);
+  // 数据源全挂时这里只有沿用来的旧条目：标记为 stale，别让它继续「涨在榜时长」。
+  const staleBoards = new Set(outBoards.filter((b) => b.stale).map((b) => b.id));
+  for (const c of clusters) c.stale = c.members.every((m) => staleBoards.has(m.source));
+
   const stories = mergeHistory(clusters, previous && previous.stories, now)
     .filter((s) => now - s.lastSeen <= 48 * 3600e3)
     .map((s) => ({
@@ -350,6 +357,7 @@ export function buildSnapshot({ digestRaw, boards, previous, now = Date.now() })
       summary: c.members.map((m) => m.desc).filter(Boolean).sort((a, b) => b.length - a.length)[0] || null,
       heat: c.heat,
       platforms: c.platforms,
+      stale: Boolean(c.stale),
       firstSeen: c.stats.firstSeen,
       peak: c.stats.peak,
       series: storyById.get(c.id)?.series || [],
